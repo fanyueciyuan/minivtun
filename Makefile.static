@@ -1,0 +1,109 @@
+#
+# Copyright (c) 2015 Justin Liu
+# Author: Justin Liu <rssnsj@gmail.com>
+# https://github.com/rssnsj/minivtun
+#
+# Makefile for pure static compilation with MbedTLS and Musl
+#
+
+# --- Toolchain and Paths ---
+# Expects a cross-compiler like `x86_64-linux-musl-gcc`
+CROSS_COMPILE ?=
+MBEDTLS_BASE  ?= tools/mbedtls-static-install
+MBEDTLS_INC   ?= $(MBEDTLS_BASE)/include
+
+CC       ?= $(CROSS_COMPILE)gcc
+AR       ?= $(CROSS_COMPILE)ar
+STRIP    ?= $(CROSS_COMPILE)strip
+PREFIX   ?= /usr/local
+
+# --- Build Configuration ---
+# These are typical for static/embedded builds but can be customized
+WITH_IPV6          ?= yes
+WITH_DAEMONIZE     ?= no       # Daemonization usually implies fork/exec, often omitted in minimal embedded
+WITH_CLIENT_MODE   ?= yes
+WITH_SERVER_MODE   ?= yes
+OPTIMIZE_FOR_SIZE  ?= yes
+NO_LOG             ?= yes      # Disable logging for smallest binary
+
+PLATFORM           ?= linux    # Assuming Linux for musl builds
+PLATFORM := $(strip $(PLATFORM))
+
+# --- MbedTLS Paths ---
+# Adjust these paths to where MbedTLS is installed for your toolchain
+
+
+MBEDTLS_LIB  ?= $(MBEDTLS_BASE)/lib
+
+CRYPTO_BACKEND = mbedtls
+
+
+ifeq ($(CRYPTO_BACKEND),mbedtls)
+    LDLIBS := -L$(MBEDTLS_LIB) -lmbedtls -lmbedx509 -lmbedcrypto
+    # musl libc often needs -lc for static linking explicitly
+    LDLIBS += -lc
+endif
+
+# --- CFLAGS and LDFLAGS ---
+CFLAGS += -Wall -flto
+CFLAGS += -Os -ffunction-sections -fdata-sections $(EXTRA_CFLAGS)
+LDFLAGS += -static -Wl,--gc-sections -s -flto
+
+# Add include paths for MbedTLS
+CFLAGS += -I$(MBEDTLS_INC)
+
+# Feature Flags (passed to C files)
+CFLAGS += -DWITH_IPV6=$(if $(filter yes,$(WITH_IPV6)),1,0)
+CFLAGS += -DWITH_DAEMONIZE=$(if $(filter yes,$(WITH_DAEMONIZE)),1,0)
+CFLAGS += -DWITH_CLIENT_MODE=$(if $(filter yes,$(WITH_CLIENT_MODE)),1,0)
+CFLAGS += -DWITH_SERVER_MODE=$(if $(filter yes,$(WITH_SERVER_MODE)),1,0)
+
+ifeq ($(NO_LOG),yes)
+    CFLAGS += -DNO_LOG=1
+endif
+
+# --- Source Files and Headers ---
+SRC_DIR = src
+OBJ_DIR = obj
+
+# --- Source Files and Headers ---
+C_SRCS = minivtun.c library.c
+C_SRCS += platform_$(PLATFORM).c
+
+ifeq ($(WITH_CLIENT_MODE),yes)
+    C_SRCS += client.c
+endif
+ifeq ($(WITH_SERVER_MODE),yes)
+    C_SRCS += server.c
+endif
+
+C_SRCS += crypto_$(CRYPTO_BACKEND).c
+
+
+
+OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(C_SRCS))
+HEADERS = $(wildcard $(SRC_DIR)/*.h)
+
+# --- Targets ---
+.PHONY: all clean install uninstall
+
+all: minivtun
+
+minivtun: $(OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
+	@mkdir -p $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+install: minivtun
+	install -d $(DESTDIR)$(PREFIX)/sbin
+	install -m 755 minivtun $(DESTDIR)$(PREFIX)/sbin/
+	$(STRIP) $(DESTDIR)$(PREFIX)/sbin/minivtun
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/sbin/minivtun
+
+clean:
+	rm -f minivtun
+	rm -rf $(OBJ_DIR)

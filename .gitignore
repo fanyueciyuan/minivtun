@@ -1,0 +1,5 @@
+/tools/
+/obj/
+/minivtun
+*.o
+/tool_mipsel/build_deps/
