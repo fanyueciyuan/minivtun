@@ -340,7 +340,10 @@ static void reply_an_echo_ack(struct minivtun_msg *req, struct ra_entry *re)
 	memset(&nmsg->hdr, 0x0, sizeof(nmsg->hdr));
 	nmsg->hdr.opcode = MINIVTUN_MSG_ECHO_ACK;
 	nmsg->hdr.seq = htons(re->xmit_seq++);
-	memcpy(nmsg->hdr.auth_key, state.crypto_ctx, sizeof(nmsg->hdr.auth_key));
+	/* Compute HMAC for ECHO response */
+	size_t msg_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);
+	crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
+	                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
 	nmsg->echo = req->echo;
 
 	out_msg = crypt_buffer;
@@ -477,8 +480,11 @@ static int network_receiving(struct server_buffers* buffers)
 	if (out_dlen < MINIVTUN_MSG_BASIC_HLEN)
 		return 0;
 
-	if (memcmp(nmsg->hdr.auth_key, state.crypto_ctx, sizeof(nmsg->hdr.auth_key)) != 0)
+	/* Verify HMAC authentication */
+	if (!crypto_verify_hmac(state.crypto_ctx, nmsg, out_dlen)) {
+		LOG("HMAC verification failed from client");
 		return 0;
+	}
 
 	switch (nmsg->hdr.opcode) {
 	case MINIVTUN_MSG_ECHO_REQ:
@@ -631,7 +637,10 @@ static int tunnel_receiving(struct server_buffers* buffers)
 
 	memset(&nmsg->hdr, 0x0, sizeof(nmsg->hdr));
 	nmsg->hdr.opcode = MINIVTUN_MSG_IPDATA;
-	memcpy(nmsg->hdr.auth_key, state.crypto_ctx, sizeof(nmsg->hdr.auth_key));
+	/* Compute HMAC (auth_key field is currently zero) */
+	size_t msg_len = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
+	crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
+	                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
 	nmsg->ipdata.proto = pi->proto;
 	nmsg->ipdata.ip_dlen = htons(ip_dlen);
 	memcpy(nmsg->ipdata.data, pi + 1, ip_dlen);
