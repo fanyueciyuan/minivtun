@@ -7,6 +7,8 @@
 
 #include <openssl/evp.h>
 #include <openssl/md5.h>
+#include <openssl/hmac.h>
+#include <openssl/sha.h>
 #include <string.h>
 #include <assert.h>
 
@@ -31,8 +33,9 @@ static struct name_cipher_pair cipher_pairs[] = {
 
 struct crypto_context {
     const EVP_CIPHER *cptype;
-    unsigned char key[CRYPTO_MAX_KEY_SIZE];
-    size_t key_len;
+    unsigned char enc_key[CRYPTO_MAX_KEY_SIZE];
+    size_t enc_key_len;
+    unsigned char hmac_key[CRYPTO_HMAC_KEY_SIZE];
 };
 
 
@@ -91,8 +94,34 @@ struct crypto_context* crypto_init(const void *cptype, const char* password)
     }
 
     ctx->cptype = cptype;
-    ctx->key_len = EVP_CIPHER_key_length(ctx->cptype);
-    fill_with_string_md5sum(password, ctx->key, ctx->key_len);
+    ctx->enc_key_len = EVP_CIPHER_key_length(ctx->cptype);
+
+    /* Use PBKDF2 to derive key material */
+    const unsigned char salt[] = "minivtun-v2-salt-2026";
+    const int iterations = 100000;
+    unsigned char key_material[64]; /* 32 bytes for encryption + 32 bytes for HMAC */
+
+    int ret = PKCS5_PBKDF2_HMAC(
+        password, strlen(password),
+        salt, sizeof(salt) - 1,
+        iterations,
+        EVP_sha256(),
+        sizeof(key_material),
+        key_material
+    );
+
+    if (ret != 1) {
+        LOG("PBKDF2 key derivation failed");
+        free(ctx);
+        return NULL;
+    }
+
+    /* Split key material: first part for encryption, second for HMAC */
+    memcpy(ctx->enc_key, key_material, ctx->enc_key_len);
+    memcpy(ctx->hmac_key, key_material + 32, CRYPTO_HMAC_KEY_SIZE);
+
+    /* Clear sensitive data */
+    memset(key_material, 0, sizeof(key_material));
 
     return ctx;
 }
@@ -101,6 +130,8 @@ struct crypto_context* crypto_init(const void *cptype, const char* password)
 void crypto_free(struct crypto_context* ctx)
 {
     if (ctx) {
+        /* Clear sensitive key material before freeing */
+        memset(ctx, 0, sizeof(*ctx));
         free(ctx);
     }
 }
@@ -142,7 +173,7 @@ int crypto_encrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
 	CRYPTO_DATA_PADDING(in, dlen, iv_len);
 
 	EVP_CIPHER_CTX_init(ctx);
-	if(!EVP_EncryptInit_ex(ctx, c_ctx->cptype, NULL, c_ctx->key, iv)) goto out;
+	if(!EVP_EncryptInit_ex(ctx, c_ctx->cptype, NULL, c_ctx->enc_key, iv)) goto out;
 	EVP_CIPHER_CTX_set_padding(ctx, 0);
 	if(!EVP_EncryptUpdate(ctx, out, &outl, in, *dlen)) goto out;
 	if(!EVP_EncryptFinal_ex(ctx, (unsigned char *)out + outl, &outl2)) goto out;
@@ -175,7 +206,7 @@ int crypto_decrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
 	CRYPTO_DATA_PADDING(in, dlen, iv_len);
 
 	EVP_CIPHER_CTX_init(ctx);
-	if(!EVP_DecryptInit_ex(ctx, c_ctx->cptype, NULL, c_ctx->key, iv)) goto out;
+	if(!EVP_DecryptInit_ex(ctx, c_ctx->cptype, NULL, c_ctx->enc_key, iv)) goto out;
 	EVP_CIPHER_CTX_set_padding(ctx, 0);
 	if(!EVP_DecryptUpdate(ctx, out, &outl, in, *dlen)) goto out;
 	if(!EVP_DecryptFinal_ex(ctx, (unsigned char *)out + outl, &outl2)) goto out;
@@ -187,4 +218,57 @@ out:
 	EVP_CIPHER_CTX_cleanup(ctx);
 	EVP_CIPHER_CTX_free(ctx);
     return ret;
+}
+
+
+/* New HMAC-based authentication functions */
+
+void crypto_compute_hmac(struct crypto_context* ctx,
+                         const void* msg, size_t msg_len,
+                         void* tag, size_t tag_len)
+{
+    if (!ctx || !msg || !tag) return;
+
+    unsigned char hmac_output[32]; /* SHA-256 output */
+    unsigned int hmac_len;
+
+    HMAC(EVP_sha256(),
+         ctx->hmac_key, CRYPTO_HMAC_KEY_SIZE,
+         msg, msg_len,
+         hmac_output, &hmac_len);
+
+    /* Copy first tag_len bytes */
+    size_t copy_len = (tag_len < hmac_len) ? tag_len : hmac_len;
+    memcpy(tag, hmac_output, copy_len);
+}
+
+bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
+{
+    if (!ctx || !msg) return false;
+
+    /* Message is struct minivtun_msg* */
+    /* auth_key is at offset 4 (after opcode+rsv+seq), length 16 */
+    unsigned char *msg_bytes = (unsigned char*)msg;
+    unsigned char received_tag[CRYPTO_AUTH_TAG_SIZE];
+    unsigned char computed_tag[CRYPTO_AUTH_TAG_SIZE];
+
+    /* 1. Extract received HMAC (offset 4 = sizeof(opcode+rsv+seq)) */
+    memcpy(received_tag, msg_bytes + 4, CRYPTO_AUTH_TAG_SIZE);
+
+    /* 2. Clear auth_key field to zero */
+    memset(msg_bytes + 4, 0, CRYPTO_AUTH_TAG_SIZE);
+
+    /* 3. Compute HMAC */
+    crypto_compute_hmac(ctx, msg, msg_len, computed_tag, CRYPTO_AUTH_TAG_SIZE);
+
+    /* 4. Restore original auth_key (for subsequent processing) */
+    memcpy(msg_bytes + 4, received_tag, CRYPTO_AUTH_TAG_SIZE);
+
+    /* 5. Constant-time comparison (prevent timing attack) */
+    int result = 0;
+    for (size_t i = 0; i < CRYPTO_AUTH_TAG_SIZE; i++) {
+        result |= (received_tag[i] ^ computed_tag[i]);
+    }
+
+    return (result == 0);
 }

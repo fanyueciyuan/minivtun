@@ -3,21 +3,24 @@
  * Author: Justin Liu <rssnsj@gmail.com>
  *
  * MbedTLS crypto backend
+ * Modified: 2026-01-19 - Added HMAC authentication support
  */
 
 #include <stdlib.h>
 #include <string.h>
 #include <mbedtls/cipher.h>
-#include <mbedtls/md5.h>
+#include <mbedtls/md.h>
+#include <mbedtls/pkcs5.h>
 #include <assert.h>
 
 #include "crypto_wrapper.h"
 #include "log.h"
 
 struct crypto_context {
-    const mbedtls_cipher_info_t *cipher_info;
-    unsigned char key[CRYPTO_MAX_KEY_SIZE];
-    size_t key_len;
+	const mbedtls_cipher_info_t *cipher_info;
+	unsigned char enc_key[CRYPTO_MAX_KEY_SIZE];      // Encryption key
+	size_t enc_key_len;
+	unsigned char hmac_key[CRYPTO_HMAC_KEY_SIZE];    // HMAC key (32 bytes)
 };
 
 struct name_cipher_pair {
@@ -35,69 +38,89 @@ static struct name_cipher_pair cipher_pairs[] = {
 
 const void * crypto_get_type(const char *name)
 {
-    for (int i = 0; cipher_pairs[i].name; i++) {
-        if (strcasecmp(cipher_pairs[i].name, name) == 0) {
-            const mbedtls_cipher_info_t *cipher_info = mbedtls_cipher_info_from_type(cipher_pairs[i].type);
-            if (cipher_info) {
-                assert(mbedtls_cipher_info_get_key_bitlen(cipher_info) / 8 <= CRYPTO_MAX_KEY_SIZE);
-                assert(mbedtls_cipher_info_get_iv_size(cipher_info) <= CRYPTO_MAX_BLOCK_SIZE);
-                return cipher_info;
-            }
-        }
-    }
-    LOG("Unsupported crypto type for MbedTLS backend: %s", name);
-    return NULL;
-}
-
-static void fill_with_string_md5sum(const char *in, void *out, size_t outlen)
-{
-	char *outp = out;
-    char *oute = outp + outlen;
-	unsigned char md5_buf[16];
-    mbedtls_md5_context ctx;
-
-	mbedtls_md5_init(&ctx);
-	mbedtls_md5_starts(&ctx);
-	mbedtls_md5_update(&ctx, (const unsigned char *)in, strlen(in));
-	mbedtls_md5_finish(&ctx, md5_buf);
-    mbedtls_md5_free(&ctx);
-
-    memcpy(out, md5_buf, (outlen > 16) ? 16 : outlen);
-
-	/* Fill in remaining buffer with repeated data. */
-	for (outp = (char*)out + 16; outp < oute; outp += 16) {
-		size_t bs = (oute - outp >= 16) ? 16 : (oute - outp);
-		memcpy(outp, out, bs);
+	for (int i = 0; cipher_pairs[i].name; i++) {
+		if (strcasecmp(cipher_pairs[i].name, name) == 0) {
+			const mbedtls_cipher_info_t *cipher_info = mbedtls_cipher_info_from_type(cipher_pairs[i].type);
+			if (cipher_info) {
+				assert(mbedtls_cipher_info_get_key_bitlen(cipher_info) / 8 <= CRYPTO_MAX_KEY_SIZE);
+				assert(mbedtls_cipher_info_get_iv_size(cipher_info) <= CRYPTO_MAX_BLOCK_SIZE);
+				return cipher_info;
+			}
+		}
 	}
+	LOG("Unsupported crypto type for MbedTLS backend: %s", name);
+	return NULL;
 }
 
 struct crypto_context* crypto_init(const void *cptype, const char* password)
 {
-    if (!cptype || !password || !password[0]) {
-        return NULL;
-    }
+	if (!cptype || !password || !password[0]) {
+		return NULL;
+	}
 
-    struct crypto_context* ctx = malloc(sizeof(struct crypto_context));
-    if (!ctx) {
-        PLOG("malloc failed for crypto context");
-        return NULL;
-    }
-    memset(ctx, 0, sizeof(struct crypto_context));
+	struct crypto_context* ctx = malloc(sizeof(struct crypto_context));
+	if (!ctx) {
+		PLOG("malloc failed for crypto context");
+		return NULL;
+	}
+	memset(ctx, 0, sizeof(struct crypto_context));
 
-    ctx->cipher_info = cptype;
-    ctx->key_len = mbedtls_cipher_info_get_key_bitlen(ctx->cipher_info) / 8;
+	ctx->cipher_info = cptype;
+	ctx->enc_key_len = mbedtls_cipher_info_get_key_bitlen(ctx->cipher_info) / 8;
 
-    fill_with_string_md5sum(password, ctx->key, ctx->key_len);
+	/* PBKDF2-SHA256 key derivation (100,000 iterations) */
+	const unsigned char salt[] = "minivtun-salt-2026";
+	unsigned char key_material[64];  // 32 bytes for encryption + 32 bytes for HMAC
 
-    LOG("Crypto context initialized for MbedTLS");
-    return ctx;
+	mbedtls_md_context_t md_ctx;
+	mbedtls_md_init(&md_ctx);
+
+	const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+	if (!md_info) {
+		LOG("mbedtls_md_info_from_type failed for SHA256");
+		free(ctx);
+		return NULL;
+	}
+
+	if (mbedtls_md_setup(&md_ctx, md_info, 1) != 0) {
+		LOG("mbedtls_md_setup failed");
+		mbedtls_md_free(&md_ctx);
+		free(ctx);
+		return NULL;
+	}
+
+	if (mbedtls_pkcs5_pbkdf2_hmac(&md_ctx,
+	                               (const unsigned char*)password, strlen(password),
+	                               salt, sizeof(salt) - 1,
+	                               100000,  // 100,000 iterations
+	                               64,      // Output: 32 enc + 32 hmac
+	                               key_material) != 0) {
+		LOG("mbedtls_pkcs5_pbkdf2_hmac failed");
+		mbedtls_md_free(&md_ctx);
+		free(ctx);
+		return NULL;
+	}
+
+	mbedtls_md_free(&md_ctx);
+
+	/* Split derived key material into encryption key and HMAC key */
+	memcpy(ctx->enc_key, key_material, ctx->enc_key_len);
+	memcpy(ctx->hmac_key, key_material + 32, CRYPTO_HMAC_KEY_SIZE);
+
+	/* Securely clear temporary key material */
+	memset(key_material, 0, sizeof(key_material));
+
+	LOG("Crypto context initialized for MbedTLS with HMAC support");
+	return ctx;
 }
 
 void crypto_free(struct crypto_context* ctx)
 {
-    if (ctx) {
-        free(ctx);
-    }
+	if (ctx) {
+		/* Securely clear sensitive key material before freeing */
+		memset(ctx, 0, sizeof(*ctx));
+		free(ctx);
+	}
 }
 
 static const char crypto_ivec_initdata[CRYPTO_MAX_BLOCK_SIZE] = {
@@ -119,73 +142,155 @@ static const char crypto_ivec_initdata[CRYPTO_MAX_BLOCK_SIZE] = {
 
 int crypto_encrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dlen)
 {
-    if (!c_ctx) { // Encryption disabled
-        memmove(out, in, *dlen);
-        return 0;
-    }
-    mbedtls_cipher_context_t cipher_ctx;
-    mbedtls_cipher_init(&cipher_ctx);
-    
-    if (mbedtls_cipher_setup(&cipher_ctx, c_ctx->cipher_info) != 0) {
-        mbedtls_cipher_free(&cipher_ctx);
-        return -1;
-    }
-    if (mbedtls_cipher_setkey(&cipher_ctx, c_ctx->key, mbedtls_cipher_info_get_key_bitlen(c_ctx->cipher_info), MBEDTLS_ENCRYPT) != 0) {
-        mbedtls_cipher_free(&cipher_ctx);
-        return -1;
-    }
+	if (!c_ctx) { // Encryption disabled
+		memmove(out, in, *dlen);
+		return 0;
+	}
+	mbedtls_cipher_context_t cipher_ctx;
+	mbedtls_cipher_init(&cipher_ctx);
 
-    unsigned char iv[CRYPTO_MAX_BLOCK_SIZE];
-    size_t iv_len = mbedtls_cipher_info_get_iv_size(c_ctx->cipher_info);
-    if (iv_len == 0) iv_len = 16;
-    memcpy(iv, crypto_ivec_initdata, iv_len);
+	if (mbedtls_cipher_setup(&cipher_ctx, c_ctx->cipher_info) != 0) {
+		mbedtls_cipher_free(&cipher_ctx);
+		return -1;
+	}
+	if (mbedtls_cipher_setkey(&cipher_ctx, c_ctx->enc_key, mbedtls_cipher_info_get_key_bitlen(c_ctx->cipher_info), MBEDTLS_ENCRYPT) != 0) {
+		mbedtls_cipher_free(&cipher_ctx);
+		return -1;
+	}
 
-    CRYPTO_DATA_PADDING(in, dlen, mbedtls_cipher_get_block_size(&cipher_ctx));
+	unsigned char iv[CRYPTO_MAX_BLOCK_SIZE];
+	size_t iv_len = mbedtls_cipher_info_get_iv_size(c_ctx->cipher_info);
+	if (iv_len == 0) iv_len = 16;
+	memcpy(iv, crypto_ivec_initdata, iv_len);
 
-    size_t output_len = 0;
-    if (mbedtls_cipher_crypt(&cipher_ctx, iv, iv_len, in, *dlen, out, &output_len) != 0) {
-        mbedtls_cipher_free(&cipher_ctx);
-        return -1;
-    }
-    *dlen = output_len;
+	CRYPTO_DATA_PADDING(in, dlen, mbedtls_cipher_get_block_size(&cipher_ctx));
 
-    mbedtls_cipher_free(&cipher_ctx);
-    return 0; // Success
+	size_t output_len = 0;
+	if (mbedtls_cipher_crypt(&cipher_ctx, iv, iv_len, in, *dlen, out, &output_len) != 0) {
+		mbedtls_cipher_free(&cipher_ctx);
+		return -1;
+	}
+	*dlen = output_len;
+
+	mbedtls_cipher_free(&cipher_ctx);
+	return 0; // Success
 }
 
 int crypto_decrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dlen)
 {
-    if (!c_ctx) { // Decryption disabled
-        memmove(out, in, *dlen);
-        return 0;
-    }
+	if (!c_ctx) { // Decryption disabled
+		memmove(out, in, *dlen);
+		return 0;
+	}
 
-    mbedtls_cipher_context_t cipher_ctx;
-    mbedtls_cipher_init(&cipher_ctx);
+	mbedtls_cipher_context_t cipher_ctx;
+	mbedtls_cipher_init(&cipher_ctx);
 
-    if (mbedtls_cipher_setup(&cipher_ctx, c_ctx->cipher_info) != 0) {
-        mbedtls_cipher_free(&cipher_ctx);
-        return -1;
-    }
-    if (mbedtls_cipher_setkey(&cipher_ctx, c_ctx->key, mbedtls_cipher_info_get_key_bitlen(c_ctx->cipher_info), MBEDTLS_DECRYPT) != 0) {
-        mbedtls_cipher_free(&cipher_ctx);
-        return -1;
-    }
-    
-    unsigned char iv[CRYPTO_MAX_BLOCK_SIZE];
-    size_t iv_len = mbedtls_cipher_info_get_iv_size(c_ctx->cipher_info);
-    if (iv_len == 0) iv_len = 16;
-    memcpy(iv, crypto_ivec_initdata, iv_len);
+	if (mbedtls_cipher_setup(&cipher_ctx, c_ctx->cipher_info) != 0) {
+		mbedtls_cipher_free(&cipher_ctx);
+		return -1;
+	}
+	if (mbedtls_cipher_setkey(&cipher_ctx, c_ctx->enc_key, mbedtls_cipher_info_get_key_bitlen(c_ctx->cipher_info), MBEDTLS_DECRYPT) != 0) {
+		mbedtls_cipher_free(&cipher_ctx);
+		return -1;
+	}
 
-    CRYPTO_DATA_PADDING(in, dlen, mbedtls_cipher_get_block_size(&cipher_ctx));
+	unsigned char iv[CRYPTO_MAX_BLOCK_SIZE];
+	size_t iv_len = mbedtls_cipher_info_get_iv_size(c_ctx->cipher_info);
+	if (iv_len == 0) iv_len = 16;
+	memcpy(iv, crypto_ivec_initdata, iv_len);
 
-    size_t output_len = 0;
-    if (mbedtls_cipher_crypt(&cipher_ctx, iv, iv_len, in, *dlen, out, &output_len) != 0) {
-        mbedtls_cipher_free(&cipher_ctx);
-        return -1;
-    }
-    *dlen = output_len;
+	CRYPTO_DATA_PADDING(in, dlen, mbedtls_cipher_get_block_size(&cipher_ctx));
 
-    mbedtls_cipher_free(&cipher_ctx);
-    return 0; // Success
+	size_t output_len = 0;
+	if (mbedtls_cipher_crypt(&cipher_ctx, iv, iv_len, in, *dlen, out, &output_len) != 0) {
+		mbedtls_cipher_free(&cipher_ctx);
+		return -1;
+	}
+	*dlen = output_len;
+
+	mbedtls_cipher_free(&cipher_ctx);
+	return 0; // Success
+}
+
+/* Compute HMAC-SHA256 authentication tag */
+void crypto_compute_hmac(struct crypto_context* ctx,
+                         const void* msg, size_t msg_len,
+                         void* tag, size_t tag_len)
+{
+	if (!ctx || !msg || !tag) {
+		return;
+	}
+
+	unsigned char hmac_output[32];  // SHA256 produces 32 bytes
+
+	mbedtls_md_context_t md_ctx;
+	mbedtls_md_init(&md_ctx);
+
+	const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+	if (!md_info) {
+		LOG("crypto_compute_hmac: mbedtls_md_info_from_type failed");
+		mbedtls_md_free(&md_ctx);
+		return;
+	}
+
+	if (mbedtls_md_setup(&md_ctx, md_info, 1) != 0) {  // 1 = enable HMAC
+		LOG("crypto_compute_hmac: mbedtls_md_setup failed");
+		mbedtls_md_free(&md_ctx);
+		return;
+	}
+
+	if (mbedtls_md_hmac_starts(&md_ctx, ctx->hmac_key, CRYPTO_HMAC_KEY_SIZE) != 0) {
+		LOG("crypto_compute_hmac: mbedtls_md_hmac_starts failed");
+		mbedtls_md_free(&md_ctx);
+		return;
+	}
+
+	if (mbedtls_md_hmac_update(&md_ctx, (const unsigned char*)msg, msg_len) != 0) {
+		LOG("crypto_compute_hmac: mbedtls_md_hmac_update failed");
+		mbedtls_md_free(&md_ctx);
+		return;
+	}
+
+	if (mbedtls_md_hmac_finish(&md_ctx, hmac_output) != 0) {
+		LOG("crypto_compute_hmac: mbedtls_md_hmac_finish failed");
+		mbedtls_md_free(&md_ctx);
+		return;
+	}
+
+	mbedtls_md_free(&md_ctx);
+
+	/* Copy first tag_len bytes (typically 16) to output tag */
+	memcpy(tag, hmac_output, tag_len);
+}
+
+/* Verify HMAC-SHA256 authentication tag (timing-safe) */
+bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
+{
+	if (!ctx || !msg || msg_len < MINIVTUN_MSG_BASIC_HLEN) {
+		return false;
+	}
+
+	/* Extract received HMAC from message header */
+	struct minivtun_msg *nmsg = (struct minivtun_msg *)msg;
+	unsigned char received_tag[CRYPTO_AUTH_TAG_SIZE];
+	memcpy(received_tag, nmsg->hdr.auth_key, CRYPTO_AUTH_TAG_SIZE);
+
+	/* Zero out auth_key field before computing HMAC */
+	memset(nmsg->hdr.auth_key, 0, sizeof(nmsg->hdr.auth_key));
+
+	/* Compute expected HMAC over entire message */
+	unsigned char computed_tag[CRYPTO_AUTH_TAG_SIZE];
+	crypto_compute_hmac(ctx, msg, msg_len, computed_tag, CRYPTO_AUTH_TAG_SIZE);
+
+	/* Restore received HMAC to message */
+	memcpy(nmsg->hdr.auth_key, received_tag, CRYPTO_AUTH_TAG_SIZE);
+
+	/* Constant-time comparison to prevent timing attacks */
+	int result = 0;
+	for (size_t i = 0; i < CRYPTO_AUTH_TAG_SIZE; i++) {
+		result |= (received_tag[i] ^ computed_tag[i]);
+	}
+
+	return (result == 0);
 }
