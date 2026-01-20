@@ -8,7 +8,13 @@
 #define __CRYPTO_WRAPPER_H
 
 #include <stddef.h>
-#include <stdbool.h>
+
+/* Use project's custom bool type from library.h */
+#ifndef bool
+typedef char bool;
+#define true 1
+#define false 0
+#endif
 
 #define CRYPTO_MAX_KEY_SIZE    32
 #define CRYPTO_MAX_BLOCK_SIZE  32
