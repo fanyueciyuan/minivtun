@@ -100,10 +100,12 @@ static int network_receiving(struct client_buffers *buffers)
 	if (out_dlen < MINIVTUN_MSG_BASIC_HLEN)
 		return 0;
 
-	/* Verify HMAC authentication */
-	if (!crypto_verify_hmac(state.crypto_ctx, nmsg, out_dlen)) {
-		LOG("HMAC verification failed - message authentication error");
-		return 0;
+	/* Verify HMAC authentication (only if encryption is enabled) */
+	if (state.crypto_ctx) {
+		if (!crypto_verify_hmac(state.crypto_ctx, nmsg, out_dlen)) {
+			LOG("HMAC verification failed - message authentication error");
+			return 0;
+		}
 	}
 
 	state.last_recv = __current;
@@ -202,10 +204,12 @@ static int tunnel_receiving(struct client_buffers *buffers)
 	nmsg->ipdata.proto = pi->proto;
 	nmsg->ipdata.ip_dlen = htons(ip_dlen);
 	memcpy(nmsg->ipdata.data, pi + 1, ip_dlen);
-	/* Compute HMAC (auth_key field is currently zero) */
-	size_t msg_len_for_hmac = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
-	crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len_for_hmac,
-	                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
+	/* Compute HMAC (only if encryption is enabled) */
+	if (state.crypto_ctx) {
+		size_t msg_len_for_hmac = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
+		crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len_for_hmac,
+		                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
+	}
 
 	out_data = buffers->read_buffer;
 	out_dlen = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
@@ -231,10 +235,7 @@ static void do_an_echo_request(void)
 	memset(nmsg, 0x0, sizeof(nmsg->hdr) + sizeof(nmsg->echo));
 	nmsg->hdr.opcode = MINIVTUN_MSG_ECHO_REQ;
 	nmsg->hdr.seq = htons(state.xmit_seq++);
-	/* Compute HMAC for ECHO request */
-	msg_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);
-	crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
-	                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
+	/* Fill echo fields BEFORE computing HMAC */
 	if (!config.tap_mode) {
 		nmsg->echo.loc_tun_in = config.tun_in_local;
 #if WITH_IPV6
@@ -242,6 +243,12 @@ static void do_an_echo_request(void)
 #endif
 	}
 	nmsg->echo.id = r;
+	/* Compute HMAC for ECHO request (only if encryption is enabled) */
+	if (state.crypto_ctx) {
+		msg_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);
+		crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
+		                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
+	}
 
 	out_msg = crypt_buffer;
 	out_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);

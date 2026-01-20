@@ -340,11 +340,14 @@ static void reply_an_echo_ack(struct minivtun_msg *req, struct ra_entry *re)
 	memset(&nmsg->hdr, 0x0, sizeof(nmsg->hdr));
 	nmsg->hdr.opcode = MINIVTUN_MSG_ECHO_ACK;
 	nmsg->hdr.seq = htons(re->xmit_seq++);
-	/* Compute HMAC for ECHO response */
-	size_t msg_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);
-	crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
-	                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
+	/* Fill echo fields BEFORE computing HMAC */
 	nmsg->echo = req->echo;
+	/* Compute HMAC for ECHO response (only if encryption is enabled) */
+	if (state.crypto_ctx) {
+		size_t msg_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);
+		crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
+		                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
+	}
 
 	out_msg = crypt_buffer;
 	out_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);
@@ -480,10 +483,12 @@ static int network_receiving(struct server_buffers* buffers)
 	if (out_dlen < MINIVTUN_MSG_BASIC_HLEN)
 		return 0;
 
-	/* Verify HMAC authentication */
-	if (!crypto_verify_hmac(state.crypto_ctx, nmsg, out_dlen)) {
-		LOG("HMAC verification failed from client");
-		return 0;
+	/* Verify HMAC authentication (only if encryption is enabled) */
+	if (state.crypto_ctx) {
+		if (!crypto_verify_hmac(state.crypto_ctx, nmsg, out_dlen)) {
+			LOG("HMAC verification failed from client");
+			return 0;
+		}
 	}
 
 	switch (nmsg->hdr.opcode) {
@@ -641,10 +646,12 @@ static int tunnel_receiving(struct server_buffers* buffers)
 	nmsg->ipdata.proto = pi->proto;
 	nmsg->ipdata.ip_dlen = htons(ip_dlen);
 	memcpy(nmsg->ipdata.data, pi + 1, ip_dlen);
-	/* Compute HMAC (auth_key field is currently zero) */
-	size_t msg_len = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
-	crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
-	                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
+	/* Compute HMAC (only if encryption is enabled) */
+	if (state.crypto_ctx) {
+		size_t msg_len = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
+		crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
+		                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
+	}
 
 	out_data = buffers->read_buffer;
 	out_dlen = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
