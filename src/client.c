@@ -224,6 +224,7 @@ static void do_an_echo_request(void)
 	struct minivtun_msg *nmsg = (struct minivtun_msg *)in_data;
 	void *out_msg;
 	size_t out_len;
+	size_t msg_len;
 	__be32 r = rand();
 
 	memset(nmsg, 0x0, sizeof(nmsg->hdr) + sizeof(nmsg->echo));
