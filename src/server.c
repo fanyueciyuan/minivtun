@@ -637,13 +637,14 @@ static int tunnel_receiving(struct server_buffers* buffers)
 
 	memset(&nmsg->hdr, 0x0, sizeof(nmsg->hdr));
 	nmsg->hdr.opcode = MINIVTUN_MSG_IPDATA;
+	/* Fill ipdata fields BEFORE computing HMAC */
+	nmsg->ipdata.proto = pi->proto;
+	nmsg->ipdata.ip_dlen = htons(ip_dlen);
+	memcpy(nmsg->ipdata.data, pi + 1, ip_dlen);
 	/* Compute HMAC (auth_key field is currently zero) */
 	size_t msg_len = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
 	crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
 	                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
-	nmsg->ipdata.proto = pi->proto;
-	nmsg->ipdata.ip_dlen = htons(ip_dlen);
-	memcpy(nmsg->ipdata.data, pi + 1, ip_dlen);
 
 	out_data = buffers->read_buffer;
 	out_dlen = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
