@@ -340,18 +340,20 @@ static void reply_an_echo_ack(struct minivtun_msg *req, struct ra_entry *re)
 	memset(&nmsg->hdr, 0x0, sizeof(nmsg->hdr));
 	nmsg->hdr.opcode = MINIVTUN_MSG_ECHO_ACK;
 	nmsg->hdr.seq = htons(re->xmit_seq++);
-	/* Fill echo fields BEFORE computing HMAC */
+	/* Fill echo fields */
 	nmsg->echo = req->echo;
-	/* Compute HMAC for ECHO response (only if encryption is enabled) */
-	if (state.crypto_ctx) {
-		size_t msg_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);
-		crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
-		                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
-	}
 
+	/* Encrypt first */
 	out_msg = crypt_buffer;
 	out_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);
 	local_to_netmsg(nmsg, &out_msg, &out_len);
+
+	/* Compute HMAC on ciphertext (only if encryption is enabled) */
+	if (state.crypto_ctx) {
+		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)out_msg;
+		crypto_compute_hmac(state.crypto_ctx, encrypted_msg, out_len,
+		                    encrypted_msg->hdr.auth_key, sizeof(encrypted_msg->hdr.auth_key));
+	}
 
 	(void)sendto(state.sockfd, out_msg, out_len, 0,
 			(const struct sockaddr *)&re->real_addr,
@@ -472,6 +474,15 @@ static int network_receiving(struct server_buffers* buffers)
 	if (rc <= 0)
 		return -1;
 
+	/* Verify HMAC on ciphertext BEFORE decryption */
+	if (state.crypto_ctx) {
+		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)buffers->read_buffer;
+		if (!crypto_verify_hmac(state.crypto_ctx, encrypted_msg, (size_t)rc)) {
+			LOG("HMAC verification failed from client");
+			return 0;
+		}
+	}
+
 	out_data = buffers->crypt_buffer;
 	out_dlen = (size_t)rc;
 	if (netmsg_to_local(buffers->read_buffer, &out_data, &out_dlen) != 0) {
@@ -482,14 +493,6 @@ static int network_receiving(struct server_buffers* buffers)
 
 	if (out_dlen < MINIVTUN_MSG_BASIC_HLEN)
 		return 0;
-
-	/* Verify HMAC authentication (only if encryption is enabled) */
-	if (state.crypto_ctx) {
-		if (!crypto_verify_hmac(state.crypto_ctx, nmsg, out_dlen)) {
-			LOG("HMAC verification failed from client");
-			return 0;
-		}
-	}
 
 	switch (nmsg->hdr.opcode) {
 	case MINIVTUN_MSG_ECHO_REQ:
@@ -642,23 +645,25 @@ static int tunnel_receiving(struct server_buffers* buffers)
 
 	memset(&nmsg->hdr, 0x0, sizeof(nmsg->hdr));
 	nmsg->hdr.opcode = MINIVTUN_MSG_IPDATA;
-	/* Fill ipdata fields BEFORE computing HMAC */
+	/* Fill ipdata fields */
 	nmsg->ipdata.proto = pi->proto;
 	nmsg->ipdata.ip_dlen = htons(ip_dlen);
 	memcpy(nmsg->ipdata.data, pi + 1, ip_dlen);
-	/* Compute HMAC (only if encryption is enabled) */
-	if (state.crypto_ctx) {
-		size_t msg_len = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
-		crypto_compute_hmac(state.crypto_ctx, nmsg, msg_len,
-		                    nmsg->hdr.auth_key, sizeof(nmsg->hdr.auth_key));
-	}
 
+	/* Encrypt first (auth_key already zero from memset above) */
 	out_data = buffers->read_buffer;
 	out_dlen = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
 	if(local_to_netmsg(nmsg, &out_data, &out_dlen) != 0) {
         LOG("Encryption failed");
         return 0;
     }
+
+	/* Compute HMAC on ciphertext with actual encrypted length */
+	if (state.crypto_ctx) {
+		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)out_data;
+		crypto_compute_hmac(state.crypto_ctx, encrypted_msg, out_dlen,
+		                    encrypted_msg->hdr.auth_key, sizeof(encrypted_msg->hdr.auth_key));
+	}
 
 	if (ce) {
 		nmsg->hdr.seq = htons(ce->ra->xmit_seq++);
