@@ -40,7 +40,8 @@ int plat_tun_alloc(char *dev, bool tap_mode)
 
 	memset(&ifr, 0, sizeof(ifr));
 	ifr.ifr_flags = tap_mode ? IFF_TAP : IFF_TUN;
-    ifr.ifr_flags |= IFF_NO_PI; // We provide protocol info manually
+	/* Don't set IFF_NO_PI - we need kernel to provide protocol info in tun_pi */
+	/* ifr.ifr_flags |= IFF_NO_PI; */
 
 	if (dev && *dev)
 		strncpy(ifr.ifr_name, dev, IFNAMSIZ);
