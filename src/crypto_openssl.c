@@ -120,6 +120,19 @@ struct crypto_context* crypto_init(const void *cptype, const char* password)
     memcpy(ctx->enc_key, key_material, ctx->enc_key_len);
     memcpy(ctx->hmac_key, key_material + ctx->enc_key_len, CRYPTO_HMAC_KEY_SIZE);
 
+    /* Debug: Print derived keys */
+    fprintf(stderr, "\n=== Crypto Init ===\n");
+    fprintf(stderr, "Password: '%s'\n", password);
+    fprintf(stderr, "Encryption key (%zu bytes): ", ctx->enc_key_len);
+    for (size_t i = 0; i < ctx->enc_key_len; i++) {
+        fprintf(stderr, "%02x", ctx->enc_key[i]);
+    }
+    fprintf(stderr, "\nHMAC key (32 bytes): ");
+    for (int i = 0; i < CRYPTO_HMAC_KEY_SIZE; i++) {
+        fprintf(stderr, "%02x", ctx->hmac_key[i]);
+    }
+    fprintf(stderr, "\n===================\n\n");
+
     /* Clear sensitive data */
     memset(key_material, 0, sizeof(key_material));
 
@@ -252,14 +265,29 @@ bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
     unsigned char received_tag[CRYPTO_AUTH_TAG_SIZE];
     unsigned char computed_tag[CRYPTO_AUTH_TAG_SIZE];
 
+    fprintf(stderr, "\n=== HMAC Verify ===\n");
+    fprintf(stderr, "Message length: %zu\n", msg_len);
+
     /* 1. Extract received HMAC (offset 4 = sizeof(opcode+rsv+seq)) */
     memcpy(received_tag, msg_bytes + 4, CRYPTO_AUTH_TAG_SIZE);
+
+    fprintf(stderr, "Received HMAC: ");
+    for (int i = 0; i < CRYPTO_AUTH_TAG_SIZE; i++) {
+        fprintf(stderr, "%02x", received_tag[i]);
+    }
+    fprintf(stderr, "\n");
 
     /* 2. Clear auth_key field to zero */
     memset(msg_bytes + 4, 0, CRYPTO_AUTH_TAG_SIZE);
 
     /* 3. Compute HMAC */
     crypto_compute_hmac(ctx, msg, msg_len, computed_tag, CRYPTO_AUTH_TAG_SIZE);
+
+    fprintf(stderr, "Computed HMAC: ");
+    for (int i = 0; i < CRYPTO_AUTH_TAG_SIZE; i++) {
+        fprintf(stderr, "%02x", computed_tag[i]);
+    }
+    fprintf(stderr, "\n");
 
     /* 4. Restore original auth_key (for subsequent processing) */
     memcpy(msg_bytes + 4, received_tag, CRYPTO_AUTH_TAG_SIZE);
@@ -270,5 +298,9 @@ bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
         result |= (received_tag[i] ^ computed_tag[i]);
     }
 
-    return (result == 0);
+    bool match = (result == 0);
+    fprintf(stderr, "HMAC match: %s\n", match ? "YES" : "NO");
+    fprintf(stderr, "===================\n\n");
+
+    return match;
 }

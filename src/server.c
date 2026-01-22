@@ -476,28 +476,37 @@ static int network_receiving(struct server_buffers* buffers)
 	if (rc <= 0)
 		return -1;
 
+	fprintf(stderr, "[SERVER] Received %d bytes from client\n", rc);
+
 	/* Verify HMAC on ciphertext BEFORE decryption */
 	if (state.crypto_ctx) {
 		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)buffers->read_buffer;
+		fprintf(stderr, "[SERVER] Verifying HMAC for %d bytes...\n", rc);
 		if (!crypto_verify_hmac(state.crypto_ctx, encrypted_msg, (size_t)rc)) {
 			LOG("HMAC verification failed from client");
 			return 0;
 		}
+		fprintf(stderr, "[SERVER] HMAC verification passed\n");
 	}
 
 	out_data = buffers->crypt_buffer;
 	out_dlen = (size_t)rc;
+	fprintf(stderr, "[SERVER] Decrypting %zu bytes...\n", out_dlen);
 	if (netmsg_to_local(buffers->read_buffer, &out_data, &out_dlen) != 0) {
         LOG("Decryption failed");
         return 0;
     }
 	nmsg = out_data;
+	fprintf(stderr, "[SERVER] Decryption successful, got %zu bytes\n", out_dlen);
 
-	if (out_dlen < MINIVTUN_MSG_BASIC_HLEN)
+	if (out_dlen < MINIVTUN_MSG_BASIC_HLEN) {
+		fprintf(stderr, "[SERVER] Message too short: %zu < %d\n", out_dlen, MINIVTUN_MSG_BASIC_HLEN);
 		return 0;
+	}
 
 	switch (nmsg->hdr.opcode) {
 	case MINIVTUN_MSG_ECHO_REQ:
+		fprintf(stderr, "[SERVER] Received ECHO_REQ, opcode=0x%02x\n", nmsg->hdr.opcode);
 		if ((re = ra_get_or_create(&real_peer))) {
 			re->last_recv = __current;
 			reply_an_echo_ack(nmsg, re);
@@ -530,6 +539,8 @@ static int network_receiving(struct server_buffers* buffers)
 		}
 		break;
 	case MINIVTUN_MSG_IPDATA:
+		fprintf(stderr, "[SERVER] Received IPDATA, opcode=0x%02x, proto=0x%04x\n",
+		        nmsg->hdr.opcode, ntohs(nmsg->ipdata.proto));
 		if (config.tap_mode) {
 			af = AF_MACADDR;
 			if (out_dlen < MINIVTUN_MSG_IPDATA_OFFSET + 14) return 0;

@@ -209,20 +209,27 @@ static int tunnel_receiving(struct client_buffers *buffers)
 	/* Encrypt first (auth_key already zero from memset above) */
 	out_data = buffers->read_buffer;
 	out_dlen = MINIVTUN_MSG_IPDATA_OFFSET + ip_dlen;
+	fprintf(stderr, "[CLIENT] Encrypting %zu bytes (ip_dlen=%zu)...\n", out_dlen, ip_dlen);
 	if (local_to_netmsg(nmsg, &out_data, &out_dlen) != 0) {
         LOG("Encryption failed");
         return 0;
     }
+	fprintf(stderr, "[CLIENT] Encryption successful, output %zu bytes\n", out_dlen);
 
 	/* Compute HMAC on ciphertext with actual encrypted length */
 	if (state.crypto_ctx) {
 		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)out_data;
 		/* Zero auth_key field before computing HMAC (Encrypt-then-MAC) */
 		memset(encrypted_msg->hdr.auth_key, 0, sizeof(encrypted_msg->hdr.auth_key));
+		fprintf(stderr, "[CLIENT] Computing HMAC for %zu bytes...\n", out_dlen);
 		crypto_compute_hmac(state.crypto_ctx, encrypted_msg, out_dlen,
 		                    encrypted_msg->hdr.auth_key, sizeof(encrypted_msg->hdr.auth_key));
+		fprintf(stderr, "[CLIENT] HMAC: %02x%02x%02x%02x...\n",
+		        encrypted_msg->hdr.auth_key[0], encrypted_msg->hdr.auth_key[1],
+		        encrypted_msg->hdr.auth_key[2], encrypted_msg->hdr.auth_key[3]);
 	}
 
+	fprintf(stderr, "[CLIENT] Sending %zu bytes to server\n", out_dlen);
 	(void)send(state.sockfd, out_data, out_dlen, 0);
 
 	return 0;
@@ -252,17 +259,24 @@ static void do_an_echo_request(void)
 	/* Encrypt first */
 	out_msg = crypt_buffer;
 	out_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);
+	fprintf(stderr, "[CLIENT] Encrypting ECHO_REQ (%zu bytes)...\n", out_len);
 	local_to_netmsg(nmsg, &out_msg, &out_len);
+	fprintf(stderr, "[CLIENT] ECHO_REQ encrypted to %zu bytes\n", out_len);
 
 	/* Compute HMAC on ciphertext (only if encryption is enabled) */
 	if (state.crypto_ctx) {
 		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)out_msg;
 		/* Zero auth_key field before computing HMAC (Encrypt-then-MAC) */
 		memset(encrypted_msg->hdr.auth_key, 0, sizeof(encrypted_msg->hdr.auth_key));
+		fprintf(stderr, "[CLIENT] Computing HMAC for ECHO_REQ...\n");
 		crypto_compute_hmac(state.crypto_ctx, encrypted_msg, out_len,
 		                    encrypted_msg->hdr.auth_key, sizeof(encrypted_msg->hdr.auth_key));
+		fprintf(stderr, "[CLIENT] ECHO_REQ HMAC: %02x%02x%02x%02x...\n",
+		        encrypted_msg->hdr.auth_key[0], encrypted_msg->hdr.auth_key[1],
+		        encrypted_msg->hdr.auth_key[2], encrypted_msg->hdr.auth_key[3]);
 	}
 
+	fprintf(stderr, "[CLIENT] Sending ECHO_REQ (%zu bytes)\n", out_len);
 	(void)send(state.sockfd, out_msg, out_len, 0);
 
 	state.has_pending_echo = true;
