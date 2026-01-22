@@ -11,10 +11,19 @@ A fast, secure, and reliable VPN service using a non-standard protocol for rapid
 
 ### Key Features
 * **Fast**: Direct UDP-encapsulated communication without complex authentication handshakes.
-* **Secure**: Both header and tunnel data are encrypted, making it difficult to track by protocol characteristics.
+* **Secure**: AES-256-CBC encryption with HMAC-SHA256 authentication for data integrity.
 * **Reliable**: Communication recovers immediately from the next received packet after a session dies.
 * **Rapid to deploy**: A standalone program with all configuration specified via a few command-line options.
 * **Portable and Modular**: Can be easily compiled for different platforms and optimized for embedded devices.
+
+### 📚 Documentation
+
+For comprehensive documentation, see **[DOCS.md](DOCS.md)** - Complete documentation index.
+
+**Quick Links:**
+- **Compilation Guide:** [docs/build/BUILD.md](docs/build/BUILD.md)
+- **Usage Guide:** [docs/usage/USAGE_GUIDE_CN.md](docs/usage/USAGE_GUIDE_CN.md) (中文)
+- **Security & Encryption:** [docs/security/ENCRYPTION_DESIGN.md](docs/security/ENCRYPTION_DESIGN.md)
 
 ### Compilation
 
@@ -42,7 +51,7 @@ To cross-compile a static binary for a `mipsel` device:
 ```
 This will produce a MIPS-compatible binary named `minivtun_mipsel`.
 
-For more details on the build process and dependencies, see [COMPILING_STATIC.md](COMPILING_STATIC.md).
+For more details on the build process and dependencies, see [docs/build/BUILD.md](docs/build/BUILD.md) or [docs/build/COMPILING_STATIC.md](docs/build/COMPILING_STATIC.md).
 
 #### **3. Traditional Dynamic Build**
 
