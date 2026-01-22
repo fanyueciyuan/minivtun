@@ -179,11 +179,14 @@ int crypto_encrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
 	unsigned char iv[CRYPTO_MAX_KEY_SIZE];
 	int outl = 0, outl2 = 0;
     int ret = -1;
+    size_t orig_dlen = *dlen;
 
 	if (iv_len == 0) iv_len = 16;
 
 	memcpy(iv, crypto_ivec_initdata, iv_len);
 	CRYPTO_DATA_PADDING(in, dlen, iv_len);
+
+	fprintf(stderr, "[ENCRYPT] Input: %zu bytes, padded to: %zu bytes\n", orig_dlen, *dlen);
 
 	EVP_CIPHER_CTX_init(ctx);
 	if(!EVP_EncryptInit_ex(ctx, c_ctx->cptype, NULL, c_ctx->enc_key, iv)) goto out;
@@ -192,6 +195,7 @@ int crypto_encrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
 	if(!EVP_EncryptFinal_ex(ctx, (unsigned char *)out + outl, &outl2)) goto out;
 
 	*dlen = (size_t)(outl + outl2);
+	fprintf(stderr, "[ENCRYPT] Output: %zu bytes\n", *dlen);
     ret = 0;
 
 out:
@@ -212,11 +216,14 @@ int crypto_decrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
 	unsigned char iv[CRYPTO_MAX_KEY_SIZE];
 	int outl = 0, outl2 = 0;
     int ret = -1;
+    size_t orig_dlen = *dlen;
 
 	if (iv_len == 0) iv_len = 16;
 
 	memcpy(iv, crypto_ivec_initdata, iv_len);
 	CRYPTO_DATA_PADDING(in, dlen, iv_len);
+
+	fprintf(stderr, "[DECRYPT] Input: %zu bytes, padded to: %zu bytes\n", orig_dlen, *dlen);
 
 	EVP_CIPHER_CTX_init(ctx);
 	if(!EVP_DecryptInit_ex(ctx, c_ctx->cptype, NULL, c_ctx->enc_key, iv)) goto out;
@@ -225,6 +232,7 @@ int crypto_decrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
 	if(!EVP_DecryptFinal_ex(ctx, (unsigned char *)out + outl, &outl2)) goto out;
 
 	*dlen = (size_t)(outl + outl2);
+	fprintf(stderr, "[DECRYPT] Output: %zu bytes\n", *dlen);
     ret = 0;
 
 out:
