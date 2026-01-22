@@ -146,6 +146,28 @@ int crypto_encrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
 		memmove(out, in, *dlen);
 		return 0;
 	}
+
+	/* New approach: Only encrypt payload, skip 20-byte header
+	 * Header contains: opcode, rsv, seq, auth_key - keep in plaintext
+	 * This avoids the ciphertext-loss problem when HMAC overwrites auth_key */
+	const size_t HEADER_SIZE = 20;  // MINIVTUN_MSG_BASIC_HLEN
+
+	if (*dlen < HEADER_SIZE) {
+		// Message too small, just copy
+		memmove(out, in, *dlen);
+		return 0;
+	}
+
+	// Copy header as-is (plaintext)
+	memcpy(out, in, HEADER_SIZE);
+
+	// Encrypt only the payload part
+	size_t payload_len = *dlen - HEADER_SIZE;
+	if (payload_len == 0) {
+		// No payload, nothing to encrypt
+		return 0;
+	}
+
 	mbedtls_cipher_context_t cipher_ctx;
 	mbedtls_cipher_init(&cipher_ctx);
 
@@ -163,14 +185,17 @@ int crypto_encrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
 	if (iv_len == 0) iv_len = 16;
 	memcpy(iv, crypto_ivec_initdata, iv_len);
 
-	CRYPTO_DATA_PADDING(in, dlen, mbedtls_cipher_get_block_size(&cipher_ctx));
+	// Pad payload to block size
+	void* payload_in = (unsigned char*)in + HEADER_SIZE;
+	void* payload_out = (unsigned char*)out + HEADER_SIZE;
+	CRYPTO_DATA_PADDING(payload_in, &payload_len, mbedtls_cipher_get_block_size(&cipher_ctx));
 
 	size_t output_len = 0;
-	if (mbedtls_cipher_crypt(&cipher_ctx, iv, iv_len, in, *dlen, out, &output_len) != 0) {
+	if (mbedtls_cipher_crypt(&cipher_ctx, iv, iv_len, payload_in, payload_len, payload_out, &output_len) != 0) {
 		mbedtls_cipher_free(&cipher_ctx);
 		return -1;
 	}
-	*dlen = output_len;
+	*dlen = HEADER_SIZE + output_len;
 
 	mbedtls_cipher_free(&cipher_ctx);
 	return 0; // Success
@@ -180,6 +205,27 @@ int crypto_decrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
 {
 	if (!c_ctx) { // Decryption disabled
 		memmove(out, in, *dlen);
+		return 0;
+	}
+
+	/* New approach: Only decrypt payload, skip 20-byte header
+	 * Header was sent in plaintext */
+	const size_t HEADER_SIZE = 20;  // MINIVTUN_MSG_BASIC_HLEN
+
+	if (*dlen < HEADER_SIZE) {
+		// Message too small, just copy
+		memmove(out, in, *dlen);
+		return 0;
+	}
+
+	// Copy header as-is (it was never encrypted)
+	memcpy(out, in, HEADER_SIZE);
+
+	// Decrypt only the payload part
+	size_t payload_len = *dlen - HEADER_SIZE;
+	if (payload_len == 0) {
+		// No payload, nothing to decrypt
+		*dlen = HEADER_SIZE;
 		return 0;
 	}
 
@@ -200,14 +246,17 @@ int crypto_decrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
 	if (iv_len == 0) iv_len = 16;
 	memcpy(iv, crypto_ivec_initdata, iv_len);
 
-	CRYPTO_DATA_PADDING(in, dlen, mbedtls_cipher_get_block_size(&cipher_ctx));
+	// Pad payload to block size (for in-place decryption)
+	void* payload_in = (unsigned char*)in + HEADER_SIZE;
+	void* payload_out = (unsigned char*)out + HEADER_SIZE;
+	CRYPTO_DATA_PADDING(payload_in, &payload_len, mbedtls_cipher_get_block_size(&cipher_ctx));
 
 	size_t output_len = 0;
-	if (mbedtls_cipher_crypt(&cipher_ctx, iv, iv_len, in, *dlen, out, &output_len) != 0) {
+	if (mbedtls_cipher_crypt(&cipher_ctx, iv, iv_len, payload_in, payload_len, payload_out, &output_len) != 0) {
 		mbedtls_cipher_free(&cipher_ctx);
 		return -1;
 	}
-	*dlen = output_len;
+	*dlen = HEADER_SIZE + output_len;
 
 	mbedtls_cipher_free(&cipher_ctx);
 	return 0; // Success
@@ -271,7 +320,9 @@ bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
 		return false;
 	}
 
-	/* Extract received HMAC from message header */
+	/* Message format: header(plaintext) + encrypted_payload
+	 * auth_key is at offset 4-19 in the plaintext header
+	 * We compute HMAC over entire message with auth_key zeroed */
 	struct minivtun_msg *nmsg = (struct minivtun_msg *)msg;
 	unsigned char received_tag[CRYPTO_AUTH_TAG_SIZE];
 	memcpy(received_tag, nmsg->hdr.auth_key, CRYPTO_AUTH_TAG_SIZE);
@@ -283,7 +334,8 @@ bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
 	unsigned char computed_tag[CRYPTO_AUTH_TAG_SIZE];
 	crypto_compute_hmac(ctx, msg, msg_len, computed_tag, CRYPTO_AUTH_TAG_SIZE);
 
-	/* Restore received HMAC to message */
+	/* Restore received HMAC to message (not needed for decryption anymore,
+	 * but good for consistency if message is reprocessed) */
 	memcpy(nmsg->hdr.auth_key, received_tag, CRYPTO_AUTH_TAG_SIZE);
 
 	/* Constant-time comparison to prevent timing attacks */
