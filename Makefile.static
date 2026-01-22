@@ -44,7 +44,8 @@ CRYPTO_BACKEND = mbedtls
 
 
 ifeq ($(CRYPTO_BACKEND),mbedtls)
-    LDLIBS := -L$(MBEDTLS_LIB) -lmbedtls -lmbedx509 -lmbedcrypto
+    # Use linker groups to resolve circular dependencies in static linking
+    LDLIBS := -L$(MBEDTLS_LIB) -Wl,--start-group -lmbedtls -lmbedx509 -lmbedcrypto -Wl,--end-group
     # musl libc often needs -lc for static linking explicitly
     LDLIBS += -lc
 endif
