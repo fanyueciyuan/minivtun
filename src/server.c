@@ -504,6 +504,9 @@ static int network_receiving(struct server_buffers* buffers)
 		return 0;
 	}
 
+	fprintf(stderr, "[SERVER] Processing message: opcode=0x%02x, seq=%u\n",
+	        nmsg->hdr.opcode, ntohs(nmsg->hdr.seq));
+
 	switch (nmsg->hdr.opcode) {
 	case MINIVTUN_MSG_ECHO_REQ:
 		fprintf(stderr, "[SERVER] Received ECHO_REQ, opcode=0x%02x\n", nmsg->hdr.opcode);

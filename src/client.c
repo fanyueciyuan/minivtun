@@ -89,22 +89,29 @@ static int network_receiving(struct client_buffers *buffers)
 	if (rc <= 0)
 		return -1;
 
+	fprintf(stderr, "[CLIENT] Received %d bytes from server\n", rc);
+
 	/* Verify HMAC on ciphertext BEFORE decryption */
 	if (state.crypto_ctx) {
 		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)buffers->read_buffer;
+		fprintf(stderr, "[CLIENT] Verifying HMAC for %d bytes...\n", rc);
 		if (!crypto_verify_hmac(state.crypto_ctx, encrypted_msg, (size_t)rc)) {
 			LOG("HMAC verification failed - message authentication error");
 			return 0;
 		}
+		fprintf(stderr, "[CLIENT] HMAC verification passed\n");
 	}
 
 	out_data = buffers->crypt_buffer;
 	out_dlen = (size_t)rc;
+	fprintf(stderr, "[CLIENT] Decrypting %zu bytes...\n", out_dlen);
 	if (netmsg_to_local(buffers->read_buffer, &out_data, &out_dlen) != 0) {
         LOG("Decryption failed.");
         return 0;
     }
 	nmsg = out_data;
+	fprintf(stderr, "[CLIENT] Decryption successful, got %zu bytes, opcode=0x%02x\n",
+	        out_dlen, nmsg->hdr.opcode);
 
 	if (out_dlen < MINIVTUN_MSG_BASIC_HLEN)
 		return 0;
