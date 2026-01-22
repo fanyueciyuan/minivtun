@@ -217,6 +217,8 @@ static int tunnel_receiving(struct client_buffers *buffers)
 	/* Compute HMAC on ciphertext with actual encrypted length */
 	if (state.crypto_ctx) {
 		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)out_data;
+		/* Zero auth_key field before computing HMAC (Encrypt-then-MAC) */
+		memset(encrypted_msg->hdr.auth_key, 0, sizeof(encrypted_msg->hdr.auth_key));
 		crypto_compute_hmac(state.crypto_ctx, encrypted_msg, out_dlen,
 		                    encrypted_msg->hdr.auth_key, sizeof(encrypted_msg->hdr.auth_key));
 	}
@@ -255,6 +257,8 @@ static void do_an_echo_request(void)
 	/* Compute HMAC on ciphertext (only if encryption is enabled) */
 	if (state.crypto_ctx) {
 		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)out_msg;
+		/* Zero auth_key field before computing HMAC (Encrypt-then-MAC) */
+		memset(encrypted_msg->hdr.auth_key, 0, sizeof(encrypted_msg->hdr.auth_key));
 		crypto_compute_hmac(state.crypto_ctx, encrypted_msg, out_len,
 		                    encrypted_msg->hdr.auth_key, sizeof(encrypted_msg->hdr.auth_key));
 	}
