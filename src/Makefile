@@ -22,30 +22,6 @@ NO_LOG              = no
 
 # Backend Selection
 # ---------------------------------
-#
-# Copyright (c) 2015 Justin Liu
-# Author: Justin Liu <rssnsj@gmail.com>
-# https://github.com/rssnsj/minivtun
-#
-# Advanced Makefile for modular builds
-#
-
-# Customizable Prefix
-# ---------------------------------
-PREFIX ?= /usr/local
-
-# Build Configuration
-# ---------------------------------
-# Set to 'yes' to enable features, 'no' to disable
-WITH_IPV6          ?= yes
-WITH_DAEMONIZE     ?= yes
-WITH_CLIENT_MODE   ?= yes
-WITH_SERVER_MODE   ?= yes
-OPTIMIZE_FOR_SIZE  ?= no
-NO_LOG              = no
-
-# Backend Selection
-# ---------------------------------
 CRYPTO_BACKEND     ?= openssl
 # PLATFORM is auto-detected, but can be overridden (e.g., PLATFORM=linux)
 UNAME_S := $(shell uname -s)
@@ -106,8 +82,12 @@ endif
 ifeq ($(CRYPTO_BACKEND),openssl)
     SRCS += crypto_openssl.o
     LDLIBS += -lcrypto
+else ifeq ($(CRYPTO_BACKEND),mbedtls)
+    SRCS += crypto_mbedtls.o
+    # For dynamic linking with mbedtls
+    LDLIBS += -lmbedtls -lmbedx509 -lmbedcrypto
 else
-    $(error Unsupported CRYPTO_BACKEND: $(CRYPTO_BACKEND))
+    $(error Unsupported CRYPTO_BACKEND: $(CRYPTO_BACKEND). Use 'openssl' or 'mbedtls')
 endif
 
 
@@ -138,30 +118,3 @@ uninstall:
 clean:
 	rm -f minivtun *.o
 
-
-HEADERS = minivtun.h library.h list.h jhash.h platform.h crypto_wrapper.h log.h
-
-# Targets
-# ---------------------------------
-.PHONY: all clean install uninstall
-
-all: minivtun
-
-minivtun: $(SRCS)
-	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
-
-%.o: %.c $(HEADERS)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-install: minivtun
-	install -d $(DESTDIR)$(PREFIX)/sbin
-	install -m 755 minivtun $(DESTDIR)$(PREFIX)/sbin/
-ifeq ($(STRIP_FLAG),yes)
-	strip $(DESTDIR)$(PREFIX)/sbin/minivtun
-endif
-
-uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/sbin/minivtun
-
-clean:
-	rm -f minivtun *.o
