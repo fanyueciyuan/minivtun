@@ -15,6 +15,7 @@
 
 #include "crypto_wrapper.h"
 #include "log.h"
+#include "minivtun.h"  // For struct minivtun_msg and MINIVTUN_MSG_BASIC_HLEN
 
 struct crypto_context {
 	const mbedtls_cipher_info_t *cipher_info;

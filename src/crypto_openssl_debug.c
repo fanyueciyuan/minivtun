@@ -18,6 +18,7 @@
 
 #include "crypto_wrapper.h"
 #include "log.h"
+#include "minivtun.h"  // For struct minivtun_msg and MINIVTUN_MSG_BASIC_HLEN
 
 
 struct name_cipher_pair {
