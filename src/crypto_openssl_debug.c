@@ -103,7 +103,7 @@ struct crypto_context* crypto_init(const void *cptype, const char* password)
     /* Use PBKDF2 to derive key material */
     const unsigned char salt[] = "minivtun-v2-salt-2026";
     const int iterations = 100000;
-    unsigned char key_material[64]; /* 32 bytes for encryption + 32 bytes for HMAC */
+    unsigned char key_material[64]; /* Enough for max encryption key (32) + HMAC key (32) */
 
     fprintf(stderr, "\n=== DEBUG: crypto_init() ===\n");
     fprintf(stderr, "Password: '%s'\n", password);
@@ -127,7 +127,7 @@ struct crypto_context* crypto_init(const void *cptype, const char* password)
 
     /* Split key material: first part for encryption, second for HMAC */
     memcpy(ctx->enc_key, key_material, ctx->enc_key_len);
-    memcpy(ctx->hmac_key, key_material + 32, CRYPTO_HMAC_KEY_SIZE);
+    memcpy(ctx->hmac_key, key_material + ctx->enc_key_len, CRYPTO_HMAC_KEY_SIZE);
 
     /* DEBUG: Print derived keys */
     fprintf(stderr, "Encryption key (%zu bytes): ", ctx->enc_key_len);
