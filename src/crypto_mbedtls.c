@@ -69,8 +69,8 @@ struct crypto_context* crypto_init(const void *cptype, const char* password)
 	ctx->enc_key_len = mbedtls_cipher_info_get_key_bitlen(ctx->cipher_info) / 8;
 
 	/* PBKDF2-SHA256 key derivation (100,000 iterations) */
-	const unsigned char salt[] = "minivtun-salt-2026";
-	unsigned char key_material[64];  // 32 bytes for encryption + 32 bytes for HMAC
+	const unsigned char salt[] = "minivtun-v2-salt-2026";
+	unsigned char key_material[64];  /* Enough for max encryption key (32) + HMAC key (32) */
 
 	mbedtls_md_context_t md_ctx;
 	mbedtls_md_init(&md_ctx);
@@ -105,7 +105,7 @@ struct crypto_context* crypto_init(const void *cptype, const char* password)
 
 	/* Split derived key material into encryption key and HMAC key */
 	memcpy(ctx->enc_key, key_material, ctx->enc_key_len);
-	memcpy(ctx->hmac_key, key_material + 32, CRYPTO_HMAC_KEY_SIZE);
+	memcpy(ctx->hmac_key, key_material + ctx->enc_key_len, CRYPTO_HMAC_KEY_SIZE);
 
 	/* Securely clear temporary key material */
 	memset(key_material, 0, sizeof(key_material));
