@@ -115,6 +115,11 @@ cat > "${MBEDTLS_SRC_DIR}/include/mbedtls/mbedtls_config.h" <<EOL
 #define MBEDTLS_CIPHER_C
 #define MBEDTLS_CIPHER_MODE_CBC
 
+// HMAC and PBKDF2 support (required for authentication)
+#define MBEDTLS_MD_C
+#define MBEDTLS_SHA256_C
+#define MBEDTLS_PKCS5_C
+
 #endif /* MBEDTLS_CONFIG_H */
 EOL
 
