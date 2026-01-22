@@ -9,7 +9,12 @@
 # --- Toolchain and Paths ---
 # Expects a cross-compiler like `x86_64-linux-musl-gcc`
 CROSS_COMPILE ?=
-MBEDTLS_BASE  ?= tools/mbedtls-static-install
+
+# Auto-detect MbedTLS path: first try build_deps from build.sh, then fallback
+TARGET_ARCH   ?= x86_64
+DEPS_DIR      := build_deps
+BUILD_SH_PATH := $(DEPS_DIR)/install/$(TARGET_ARCH)
+MBEDTLS_BASE  ?= $(if $(wildcard $(BUILD_SH_PATH)/include/mbedtls),$(BUILD_SH_PATH),tools/mbedtls-static-install)
 MBEDTLS_INC   ?= $(MBEDTLS_BASE)/include
 
 CC       ?= $(CROSS_COMPILE)gcc
