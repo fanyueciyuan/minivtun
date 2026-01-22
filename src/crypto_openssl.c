@@ -174,28 +174,57 @@ int crypto_encrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
         memmove(out, in, *dlen);
         return 0;
     }
+
+	/* New approach: Only encrypt payload, skip 20-byte header
+	 * Header contains: opcode, rsv, seq, auth_key - keep in plaintext
+	 * This avoids the ciphertext-loss problem when HMAC overwrites auth_key */
+	const size_t HEADER_SIZE = 20;  // MINIVTUN_MSG_BASIC_HLEN
+
+	if (*dlen < HEADER_SIZE) {
+		// Message too small, just copy
+		memmove(out, in, *dlen);
+		return 0;
+	}
+
+	// Copy header as-is (plaintext)
+	memcpy(out, in, HEADER_SIZE);
+
+	// Encrypt only the payload part
+	size_t payload_len = *dlen - HEADER_SIZE;
+	if (payload_len == 0) {
+		// No payload, nothing to encrypt
+		return 0;
+	}
+
 	size_t iv_len = EVP_CIPHER_iv_length(c_ctx->cptype);
 	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
 	unsigned char iv[CRYPTO_MAX_KEY_SIZE];
 	int outl = 0, outl2 = 0;
     int ret = -1;
-    size_t orig_dlen = *dlen;
+    size_t orig_payload_len = payload_len;
 
 	if (iv_len == 0) iv_len = 16;
 
 	memcpy(iv, crypto_ivec_initdata, iv_len);
-	CRYPTO_DATA_PADDING(in, dlen, iv_len);
 
-	fprintf(stderr, "[ENCRYPT] Input: %zu bytes, padded to: %zu bytes\n", orig_dlen, *dlen);
+	// Pad payload to block size
+	void* payload_in = (unsigned char*)in + HEADER_SIZE;
+	void* payload_out = (unsigned char*)out + HEADER_SIZE;
+	CRYPTO_DATA_PADDING(payload_in, &payload_len, iv_len);
+
+	fprintf(stderr, "[ENCRYPT] Header: %zu bytes (plaintext), Payload: %zu bytes → padded to %zu bytes\n",
+	        HEADER_SIZE, orig_payload_len, payload_len);
 
 	EVP_CIPHER_CTX_init(ctx);
 	if(!EVP_EncryptInit_ex(ctx, c_ctx->cptype, NULL, c_ctx->enc_key, iv)) goto out;
 	EVP_CIPHER_CTX_set_padding(ctx, 0);
-	if(!EVP_EncryptUpdate(ctx, out, &outl, in, *dlen)) goto out;
-	if(!EVP_EncryptFinal_ex(ctx, (unsigned char *)out + outl, &outl2)) goto out;
+	if(!EVP_EncryptUpdate(ctx, payload_out, &outl, payload_in, payload_len)) goto out;
+	if(!EVP_EncryptFinal_ex(ctx, (unsigned char *)payload_out + outl, &outl2)) goto out;
 
-	*dlen = (size_t)(outl + outl2);
-	fprintf(stderr, "[ENCRYPT] Output: %zu bytes\n", *dlen);
+	payload_len = (size_t)(outl + outl2);
+	*dlen = HEADER_SIZE + payload_len;
+	fprintf(stderr, "[ENCRYPT] Total output: %zu bytes (header %zu + encrypted payload %zu)\n",
+	        *dlen, HEADER_SIZE, payload_len);
     ret = 0;
 
 out:
@@ -211,28 +240,56 @@ int crypto_decrypt(struct crypto_context* c_ctx, void* in, void* out, size_t* dl
         return 0;
     }
 
+	/* New approach: Only decrypt payload, skip 20-byte header
+	 * Header was sent in plaintext */
+	const size_t HEADER_SIZE = 20;  // MINIVTUN_MSG_BASIC_HLEN
+
+	if (*dlen < HEADER_SIZE) {
+		// Message too small, just copy
+		memmove(out, in, *dlen);
+		return 0;
+	}
+
+	// Copy header as-is (it was never encrypted)
+	memcpy(out, in, HEADER_SIZE);
+
+	// Decrypt only the payload part
+	size_t payload_len = *dlen - HEADER_SIZE;
+	if (payload_len == 0) {
+		// No payload, nothing to decrypt
+		*dlen = HEADER_SIZE;
+		return 0;
+	}
+
 	size_t iv_len = EVP_CIPHER_iv_length(c_ctx->cptype);
 	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
 	unsigned char iv[CRYPTO_MAX_KEY_SIZE];
 	int outl = 0, outl2 = 0;
     int ret = -1;
-    size_t orig_dlen = *dlen;
+    size_t orig_payload_len = payload_len;
 
 	if (iv_len == 0) iv_len = 16;
 
 	memcpy(iv, crypto_ivec_initdata, iv_len);
-	CRYPTO_DATA_PADDING(in, dlen, iv_len);
 
-	fprintf(stderr, "[DECRYPT] Input: %zu bytes, padded to: %zu bytes\n", orig_dlen, *dlen);
+	// Pad payload to block size (for in-place decryption)
+	void* payload_in = (unsigned char*)in + HEADER_SIZE;
+	void* payload_out = (unsigned char*)out + HEADER_SIZE;
+	CRYPTO_DATA_PADDING(payload_in, &payload_len, iv_len);
+
+	fprintf(stderr, "[DECRYPT] Header: %zu bytes (plaintext), Payload: %zu bytes → padded to %zu bytes\n",
+	        HEADER_SIZE, orig_payload_len, payload_len);
 
 	EVP_CIPHER_CTX_init(ctx);
 	if(!EVP_DecryptInit_ex(ctx, c_ctx->cptype, NULL, c_ctx->enc_key, iv)) goto out;
 	EVP_CIPHER_CTX_set_padding(ctx, 0);
-	if(!EVP_DecryptUpdate(ctx, out, &outl, in, *dlen)) goto out;
-	if(!EVP_DecryptFinal_ex(ctx, (unsigned char *)out + outl, &outl2)) goto out;
+	if(!EVP_DecryptUpdate(ctx, payload_out, &outl, payload_in, payload_len)) goto out;
+	if(!EVP_DecryptFinal_ex(ctx, (unsigned char *)payload_out + outl, &outl2)) goto out;
 
-	*dlen = (size_t)(outl + outl2);
-	fprintf(stderr, "[DECRYPT] Output: %zu bytes\n", *dlen);
+	payload_len = (size_t)(outl + outl2);
+	*dlen = HEADER_SIZE + payload_len;
+	fprintf(stderr, "[DECRYPT] Total output: %zu bytes (header %zu + decrypted payload %zu)\n",
+	        *dlen, HEADER_SIZE, payload_len);
     ret = 0;
 
 out:
@@ -267,19 +324,18 @@ bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
 {
     if (!ctx || !msg) return false;
 
-    /* Message is struct minivtun_msg* */
-    /* auth_key is at offset 4 (after opcode+rsv+seq), length 16 */
+    /* Message format: header(plaintext) + encrypted_payload
+     * auth_key is at offset 4-19 in the plaintext header
+     * We compute HMAC over entire message with auth_key zeroed */
     unsigned char *msg_bytes = (unsigned char*)msg;
     unsigned char received_tag[CRYPTO_AUTH_TAG_SIZE];
-    unsigned char original_ciphertext[CRYPTO_AUTH_TAG_SIZE];  // Save original ciphertext!
     unsigned char computed_tag[CRYPTO_AUTH_TAG_SIZE];
 
     fprintf(stderr, "\n=== HMAC Verify ===\n");
     fprintf(stderr, "Message length: %zu\n", msg_len);
 
-    /* 1. Extract received HMAC AND save original ciphertext */
+    /* 1. Extract received HMAC from auth_key field (offset 4) */
     memcpy(received_tag, msg_bytes + 4, CRYPTO_AUTH_TAG_SIZE);
-    memcpy(original_ciphertext, msg_bytes + 4, CRYPTO_AUTH_TAG_SIZE);
 
     fprintf(stderr, "Received HMAC: ");
     for (int i = 0; i < CRYPTO_AUTH_TAG_SIZE; i++) {
@@ -287,10 +343,10 @@ bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
     }
     fprintf(stderr, "\n");
 
-    /* 2. Clear auth_key field to zero */
+    /* 2. Zero auth_key field for HMAC computation */
     memset(msg_bytes + 4, 0, CRYPTO_AUTH_TAG_SIZE);
 
-    /* 3. Compute HMAC */
+    /* 3. Compute HMAC over message with auth_key=0 */
     crypto_compute_hmac(ctx, msg, msg_len, computed_tag, CRYPTO_AUTH_TAG_SIZE);
 
     fprintf(stderr, "Computed HMAC: ");
@@ -299,8 +355,9 @@ bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
     }
     fprintf(stderr, "\n");
 
-    /* 4. Restore original CIPHERTEXT (NOT the HMAC!) for decryption */
-    memcpy(msg_bytes + 4, original_ciphertext, CRYPTO_AUTH_TAG_SIZE);
+    /* 4. Restore HMAC to auth_key field (not needed for decryption anymore,
+     *    but good for consistency if message is reprocessed) */
+    memcpy(msg_bytes + 4, received_tag, CRYPTO_AUTH_TAG_SIZE);
 
     /* 5. Constant-time comparison (prevent timing attack) */
     int result = 0;

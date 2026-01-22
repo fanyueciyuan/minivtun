@@ -348,13 +348,13 @@ static void reply_an_echo_ack(struct minivtun_msg *req, struct ra_entry *re)
 	out_len = MINIVTUN_MSG_BASIC_HLEN + sizeof(nmsg->echo);
 	local_to_netmsg(nmsg, &out_msg, &out_len);
 
-	/* Compute HMAC on ciphertext (only if encryption is enabled) */
+	/* Compute HMAC on message (header in plaintext + encrypted payload) */
 	if (state.crypto_ctx) {
-		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)out_msg;
-		/* Zero auth_key field before computing HMAC (Encrypt-then-MAC) */
-		memset(encrypted_msg->hdr.auth_key, 0, sizeof(encrypted_msg->hdr.auth_key));
-		crypto_compute_hmac(state.crypto_ctx, encrypted_msg, out_len,
-		                    encrypted_msg->hdr.auth_key, sizeof(encrypted_msg->hdr.auth_key));
+		struct minivtun_msg *msg = (struct minivtun_msg *)out_msg;
+		/* auth_key field should already be zero. Zero it again to be safe. */
+		memset(msg->hdr.auth_key, 0, sizeof(msg->hdr.auth_key));
+		crypto_compute_hmac(state.crypto_ctx, msg, out_len,
+		                    msg->hdr.auth_key, sizeof(msg->hdr.auth_key));
 	}
 
 	(void)sendto(state.sockfd, out_msg, out_len, 0,
