@@ -226,6 +226,11 @@ static int tunnel_receiving(struct client_buffers *buffers)
 	/* Compute HMAC on ciphertext with actual encrypted length */
 	if (state.crypto_ctx) {
 		struct minivtun_msg *encrypted_msg = (struct minivtun_msg *)out_data;
+		/* The encrypted message has ciphertext in auth_key field.
+		 * Save it for logging (server needs to reconstruct it for decryption) */
+		unsigned char ciphertext_backup[CRYPTO_AUTH_TAG_SIZE];
+		memcpy(ciphertext_backup, encrypted_msg->hdr.auth_key, sizeof(ciphertext_backup));
+
 		/* Zero auth_key field before computing HMAC (Encrypt-then-MAC) */
 		memset(encrypted_msg->hdr.auth_key, 0, sizeof(encrypted_msg->hdr.auth_key));
 		fprintf(stderr, "[CLIENT] Computing HMAC for %zu bytes...\n", out_dlen);
@@ -234,6 +239,9 @@ static int tunnel_receiving(struct client_buffers *buffers)
 		fprintf(stderr, "[CLIENT] HMAC: %02x%02x%02x%02x...\n",
 		        encrypted_msg->hdr.auth_key[0], encrypted_msg->hdr.auth_key[1],
 		        encrypted_msg->hdr.auth_key[2], encrypted_msg->hdr.auth_key[3]);
+		fprintf(stderr, "[CLIENT] Original ciphertext at auth_key: %02x%02x%02x%02x... (will be lost)\n",
+		        ciphertext_backup[0], ciphertext_backup[1],
+		        ciphertext_backup[2], ciphertext_backup[3]);
 	}
 
 	fprintf(stderr, "[CLIENT] Sending %zu bytes to server\n", out_dlen);

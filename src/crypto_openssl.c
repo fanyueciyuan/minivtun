@@ -271,13 +271,15 @@ bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
     /* auth_key is at offset 4 (after opcode+rsv+seq), length 16 */
     unsigned char *msg_bytes = (unsigned char*)msg;
     unsigned char received_tag[CRYPTO_AUTH_TAG_SIZE];
+    unsigned char original_ciphertext[CRYPTO_AUTH_TAG_SIZE];  // Save original ciphertext!
     unsigned char computed_tag[CRYPTO_AUTH_TAG_SIZE];
 
     fprintf(stderr, "\n=== HMAC Verify ===\n");
     fprintf(stderr, "Message length: %zu\n", msg_len);
 
-    /* 1. Extract received HMAC (offset 4 = sizeof(opcode+rsv+seq)) */
+    /* 1. Extract received HMAC AND save original ciphertext */
     memcpy(received_tag, msg_bytes + 4, CRYPTO_AUTH_TAG_SIZE);
+    memcpy(original_ciphertext, msg_bytes + 4, CRYPTO_AUTH_TAG_SIZE);
 
     fprintf(stderr, "Received HMAC: ");
     for (int i = 0; i < CRYPTO_AUTH_TAG_SIZE; i++) {
@@ -297,8 +299,8 @@ bool crypto_verify_hmac(struct crypto_context* ctx, void* msg, size_t msg_len)
     }
     fprintf(stderr, "\n");
 
-    /* 4. Restore original auth_key (for subsequent processing) */
-    memcpy(msg_bytes + 4, received_tag, CRYPTO_AUTH_TAG_SIZE);
+    /* 4. Restore original CIPHERTEXT (NOT the HMAC!) for decryption */
+    memcpy(msg_bytes + 4, original_ciphertext, CRYPTO_AUTH_TAG_SIZE);
 
     /* 5. Constant-time comparison (prevent timing attack) */
     int result = 0;
